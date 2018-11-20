@@ -1,3 +1,4 @@
+import asyncio
 from collections import defaultdict
 from functools import wraps
 from typing import Optional, List, Union, Callable, Dict
@@ -48,15 +49,15 @@ class Route:
         return None
 
     @classmethod
-    def before_hook(cls, hook_function: HookFunction, *args):
-        return cls._add_hook(BEFORE, hook_function, *args)
+    def before_hook(cls, hook_function: HookFunction, *args, **kwargs):
+        return cls._add_hook(BEFORE, hook_function, *args, **kwargs)
 
     @classmethod
-    def after_hook(cls, hook_function: HookFunction, *args):
-        return cls._add_hook(AFTER, hook_function, *args)
+    def after_hook(cls, hook_function: HookFunction, *args, **kwargs):
+        return cls._add_hook(AFTER, hook_function, *args, **kwargs)
 
     @staticmethod
-    def _add_hook(hook: str, hook_function: HookFunction, *args):
+    def _add_hook(hook: str, hook_function: HookFunction, *args, **kwargs):
         def decorator(hookable: Union[Route, Callable]):
             """Bind the hook function to the given hookable object.
 
@@ -71,11 +72,12 @@ class Route:
             hookable : Route or (unbound) class method
             """
             nonlocal hook_function
-            if args:
-                full_hook_function = hook_function
+            full_hook_function = hook_function
 
-                def hook_function(req, res, view, params):
-                    return full_hook_function(req, res, view, params, *args)
+            async def hook_function(req, res, view, params):
+                if asyncio.iscoroutinefunction(full_hook_function):
+                    return await full_hook_function(req, res, view, params, *args, **kwargs)
+                return full_hook_function(req, res, view, params, *args, **kwargs)
 
             if isinstance(hookable, Route):
                 route = hookable
@@ -87,10 +89,10 @@ class Route:
                 @wraps(unbound_method_view)
                 async def with_hook(self, req, res, **kwargs):
                     if hook == BEFORE:
-                        hook_function(req, res, unbound_method_view, kwargs)
+                        await hook_function(req, res, unbound_method_view, kwargs)
                     await unbound_method_view(self, req, res, **kwargs)
                     if hook == AFTER:
-                        hook_function(req, res, unbound_method_view, kwargs)
+                        await hook_function(req, res, unbound_method_view, kwargs)
 
                 return with_hook
 
@@ -98,6 +100,15 @@ class Route:
 
     async def __call__(self, request, response, **kwargs) -> None:
         view = self._view
-        self.hooks[BEFORE](request, response, view, kwargs)
+
+        if asyncio.iscoroutinefunction(self.hooks[BEFORE]):
+            await self.hooks[BEFORE](request, response, view, kwargs)
+        else:
+            self.hooks[BEFORE](request, response, view, kwargs)
+
         await view(request, response, **kwargs)
-        self.hooks[AFTER](request, response, view, kwargs)
+
+        if asyncio.iscoroutinefunction(self.hooks[AFTER]):
+            await self.hooks[AFTER](request, response, view, kwargs)
+        else:
+            self.hooks[AFTER](request, response, view, kwargs)
